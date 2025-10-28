@@ -3,6 +3,7 @@ Softwre supply of power use for T1060
 I have an Immersun power diverter with Ilink and the CT wireless link.
 I already have multiple CTs attached to my power lin and there was little room for more. So I decided to emulate the CTs wireless data sender.
 ImmerSun refer to this device as a Wireless Sensor T1070
+I did contact ImmerSun to try and get my devices accepted so I could use their app, but they ignored me so I had to do this.
 The Diverter is the main central device and controls the comms between the various modules. The devices I have use the RF69 Transceiver
 This transmits on 869.2MHz (Channel 1) the data is sent at 38,400bps using FSK.
 The format I discovered using URH it has the following
@@ -16,15 +17,20 @@ where LL = length of payload
       FL = Flags (as per RF95 data sheet)
 
 However Immersun do not use this addressing method but do use it as another filter so these bytes have to match sening device in my case 
-it was XX 00 F5 4E FF (obviously the XX value depends on payload)
+it was LL 00 F5 4E FF (obviously the LL value depends on payload length)
 
 Captured data loos like this
 aaaaaa869817e960b00f54effd0ff000102010037b2aa
 
 
-                                ¦       Payload         ¦
+                  ¦       Payload         ¦
 ¦ preamble ¦ sync bytes ¦ length¦ header ¦ useable data ¦ crc ¦
    aaaaaa     869817e96   0b     00f54eff  d0ff0001020100 37b2
+
+   Finally had a day of sun so I was able to test it fully I am pleased to be able to say it works perfectly, as well as the official
+   CT link T1070. I have added the ability to stop diverting via the Mqtt network. In my case this is automatically controlled by 
+   Home Assistant when the car is plugged in it uses the excess to charge the EV. All in all a successful project.
+   
 
 Demodulated data looks like this
 D0 FF 00 01 02 01 00

@@ -30,6 +30,7 @@ aaaaaa869817e960b00f54effd0ff000102010037b2aa
    Finally had a day of sun so I was able to test it fully I am pleased to be able to say it works perfectly, as well as the official
    CT link T1070. I have added the ability to stop diverting via the Mqtt network. In my case this is automatically controlled by 
    Home Assistant when the car is plugged in it uses the excess to charge the EV. All in all a successful project.
+   I used an ESP32-WROOM-32D with a RFM69 module connected to the SPI bus
    
 
 Demodulated data looks like this

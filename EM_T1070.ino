@@ -4,23 +4,27 @@
 #include <SPI.h>
 
 // RF69 Settings
-#define RF69_FREQ 869.2
-#define RFM69_CS 5   // Chip select pin
-#define RFM69_INT 2  // Interrupt pin
-#define RFM69_RST 14 // Reset pin
+#define RF69_FREQ 869.2 // Channel 1 on ImmerSun
+#define RFM69_CS 5      // Chip select pin
+#define RFM69_INT 2     // Interrupt pin
+#define RFM69_RST 14    // Reset pin
 
 // WiFi & MQTT Config (EDIT THESE LOCALLY - NEVER SHARE)
-const char* ssid = "My Wifi SSID";
-const char* wifiPassword = "My Wifi Password";
-const char* mqttServer = "My MQTT Broker ip";
+const char* ssid = "my wifi";
+const char* wifiPassword = "my password";
+const char* mqttServer = "my broker ip";
 const int mqttPort = 1883;
-const char* mqttUser = "My mqtt username";
-const char* mqttPassword = "My mqtt password";
+const char* mqttUser = "my mqtt username";
+const char* mqttPassword = "my mqtt password";
+
 // MQTT Topics
-const char* housePowerTopic = "solar_assistant/inverter_1/load_power/state";
+const char* housePowerTopic = "solar_assistant/inverter_1/grid_power/state";
 const char* pvGenTopic = "solar_assistant/inverter_1/pv_power/state";
 const char* voltageTopic = "solar_assistant/inverter_1/grid_voltage/state";
-const char* immersunTopic = "immersun/T1070/state";
+const char* immersunTopic = "immersun/T1070/status";
+const char* immersunCmd = "immersun/T1070/cmd";
+const char* immersunState ="immersun/T1070/state";
+
 // RFM69
 RH_RF69 rf69(RFM69_CS, RFM69_INT);
 uint8_t pkt[32]={
@@ -29,6 +33,20 @@ uint8_t pkt[32]={
   0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xF3,
   0x00, 0x00, 0x00, 0xD3, 0x07, 0x00, 0x00, 0x80 
   };
+
+// Globals
+float meterCT = 250.0;      // Default import
+float pvGen = 300.0;        // Default gen
+float excess = 50.0;         // Default excess   
+int32_t v = 239;            // default voltage
+int cmd = 1;                // default enable diverter
+unsigned long lastMqttReconnect = 0;
+unsigned long lastHeartbeat = 0;
+unsigned long lastDebugPrint = 0;
+unsigned long lastTx = 0;
+uint8_t seq = 0x20;         // Start at 0x20 per your note/logs
+bool mqttConnected = false;
+
 uint8_t spiReadRegister(uint8_t address) {
   digitalWrite(RFM69_CS, LOW);
   SPI.transfer(address & 0x7F);
@@ -45,44 +63,35 @@ void spiWriteRegister(uint8_t address, uint8_t value) {
 }
 WiFiClient T1070Client;
 PubSubClient mqttClient(T1070Client);
-// Globals
-float housePower = -235.0;  // Default import
-float pvGen = 0.0;          // Default gen
-int32_t v = 239;      // default voltage
-unsigned long lastMqttReconnect = 0;
-unsigned long lastHeartbeat = 0;
-unsigned long lastDebugPrint = 0;
-unsigned long lastTx = 0;
-uint8_t seq = 0x20;         // Start at 0x20 per your note/logs
-bool mqttConnected = false;
-// MQTT Callback
+
+
+//  MQTT Callback
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String message;
   for (int i = 0; i < length; i++) {
     message += (char)payload[i];
   }
-  Serial.print("MQTT ["); Serial.print(topic); Serial.print("]: "); Serial.println(message);
 
   // Plain float fallback for Solar Assistant (e.g., "500.0")
   float value = message.toFloat();
   if (strcmp(topic, housePowerTopic) == 0) {
-    housePower = value;
+    meterCT = value;
   } else if (strcmp(topic, pvGenTopic) == 0) {
     pvGen = value;
   } else if (strcmp(topic, voltageTopic) == 0) {
     v = value;
+  } else if (strcmp(topic, immersunCmd) == 0) {
+    cmd = int(trunc(value));
   }
-  //Serial.printf("Updated: House=%.1fW, PV=%.1fW\n", housePower, pvGen);
+  //excess = meterCT + pvGen;
 }
 
 void setup() {
   Serial.begin(115200);
   while (!Serial) { delay(1); }
-
   SPI.begin();
   SPI.setDataMode(SPI_MODE0);
   SPI.setBitOrder(MSBFIRST);
-  
   pinMode(RFM69_RST, OUTPUT);
   digitalWrite(RFM69_RST, LOW);  
   delay(100);
@@ -110,7 +119,7 @@ void setup() {
   // MQTT
   mqttClient.setServer(mqttServer, mqttPort);
   mqttClient.setCallback(mqttCallback);
-  //mqttClient.setBufferSize(2048);
+  mqttClient.setBufferSize(2048);
 
   // RFM69
   if (!rf69.init()) {
@@ -134,11 +143,9 @@ void setup() {
   rf69.setHeaderId(0x4E);
   rf69.setHeaderFlags(0xFF);
   rf69.setPromiscuous(true);
-
   rf69.setPreambleLength(3);
   uint8_t syncwords[] = {0x69, 0x81, 0x7e, 0x96};
   rf69.setSyncWords(syncwords, sizeof(syncwords));
-
   rf69.setModeRx();
   lastHeartbeat = millis();
   Serial.println("RFM69 RX ready - Heartbeat timeout: 3s");
@@ -154,6 +161,8 @@ void loop() {
       mqttClient.subscribe(housePowerTopic);
       mqttClient.subscribe(pvGenTopic);
       mqttClient.subscribe(voltageTopic);
+      mqttClient.subscribe(immersunCmd);
+      mqttClient.subscribe(immersunTopic);
       mqttConnected = true;
       Serial.println("OK");
     } else {
@@ -165,19 +174,20 @@ void loop() {
 
   // Status debug every 10s
   if (now - lastDebugPrint > 10000) {
-    Serial.printf("Status: WiFi=%s, MQTT=%s, LastHB=%lums ago, House=%.1fW, PV=%.1fW\n",
+    Serial.printf("Status: WiFi=%s, MQTT=%s, LastHB=%lums ago, MeterCT=%.1fW, PV=%.1fW\n\r",
                   WiFi.status() == WL_CONNECTED ? "OK" : "DOWN",
                   mqttConnected ? "OK" : "DOWN",
-                  now - lastHeartbeat, housePower, pvGen);
+                  now - lastHeartbeat, meterCT, pvGen);
     lastDebugPrint = now;
   }
 
   // Heartbeat RX
+
   if (rf69.available()) {
     uint8_t buf[RH_RF69_MAX_MESSAGE_LEN];
     uint8_t len = sizeof(buf);
     if (rf69.recv(buf, &len)) {
-      Serial.printf("RX len=%d, first bytes: %02X %02X %02X...\n", len, buf[0], buf[1], buf[2]);
+       //    Serial.printf("RX len=%d, first bytes: %02X %02X %02X...\n", len, buf[0], buf[1], buf[2]);
       if (len == 7 && buf[0] == 0xD0 && buf[1] == 0xFF && buf[2] == 0x00 && 
           buf[3] == 0x01 && buf[4] == 0x02 && buf[5] == 0x01 && buf[6] == 0x00) {
         Serial.println("Heartbeat confirmed");
@@ -192,7 +202,7 @@ void loop() {
   }
 
   // Fallback TX every 2s if no HB >3s
-  if (now - lastHeartbeat > 3000 && now - lastTx > 2000) {
+  if (now - lastHeartbeat > 5000 && now - lastTx > 2000) {
     Serial.println("No HB timeout - Fallback TX");
     //rf69.setModeTx();
     sendResponse();
@@ -213,9 +223,15 @@ void sendResponse() {
   memset(pkt + 8, 0x00, 3); memset(pkt + 12, 0x00, 3); memset(pkt + 24, 0x00, 3);
 
   // MQTT values + jitter
-  int32_t ct1 = (int32_t)(housePower + ((millis() % 1000) / 500.0 - 1.0));  // ±1W
+  int32_t ct1 = (int32_t)(meterCT + ((millis() % 1000) / 500.0 - 1.0));  // ±1W
+  if (ct1 < -50) {
+    excess = (ct1 * -1);
+  }
+  // My inverter takes care of charging battery first so the 2 CTs are not necessary
+  // I just need to sense when the excess is being exported and how much
+  //int32_t ct1 = (int32_t)(meterCT + ((millis() % 1000) / 500.0 - 1.0));  // ±1W
   int32_t ct2 = (int32_t)(pvGen + ((millis() % 1000) / 500.0 - 1.0));
-  int32_t excess = ct2 - ct1;
+  //int32_t excess = ct2 - ct1;
   uint8_t cf1 = (uint8_t)(abs(ct1) / 24);
   uint8_t cf2 = (uint8_t)(abs(ct2) / 24);
   auto encodeLE32 = [](uint8_t* buf, int32_t val) {
@@ -224,6 +240,15 @@ void sendResponse() {
     buf[2] = (uint8_t)((val >> 16) & 0xFF);
     buf[3] = (uint8_t)((val >> 24) & 0xFF);
   };
+  if (cmd == 0) {
+    ct1 = 0;
+    ct2 = 0;
+     mqttClient.publish(immersunState, "OFF");
+    // publish immersun off
+  } else {
+     mqttClient.publish(immersunState, "ON");
+    // publish immersun on
+  }
   encodeLE32(pkt + 15, ct1);
   encodeLE32(pkt + 19, ct2);
 
@@ -238,12 +263,12 @@ void sendResponse() {
   pkt[7] = cf1; pkt[11] = cf2; pkt[23] = (uint8_t)v;
   pkt[31] = seq++;  // Inc always
   // Hex dump
-  Serial.print("To be TXd Hex: ");
-  for (int i = 0; i < 32; i++) {
-    Serial.printf("%02X ", pkt[i]);
-    } 
+  //Serial.print("To be TXd Hex: ");
+  //for (int i = 0; i < 32; i++) {
+  //  Serial.printf("%02X ", pkt[i]);
+  //  } 
   Serial.println();
-  Serial.printf("TX: House=%dW, PV=%dW, Excess=%dW, Myst=%dW, cf=%d/%d, V=%d, Seq=0x%02X\n", ct1, ct2, excess, myst, cf1, cf2, v, pkt[31]);
+  Serial.printf("Updated: MeterCT=%.1fW, PV=%.1fW Excess=%.1fW\n\r", meterCT, pvGen, excess);
   rf69.send(pkt, 32);
   if (rf69.waitPacketSent()) {
     Serial.println("Data sent OK");

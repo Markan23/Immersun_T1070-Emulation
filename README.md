@@ -1,4 +1,4 @@
-# Immersun_T1070-Emulation
+# Immersun T1070 Emulation
 Softwre supply of power use for T1060
 I have an Immersun power diverter with Ilink and the CT wireless link.
 I already have multiple CTs attached to my power lin and there was little room for more. So I decided to emulate the CTs wireless data sender.

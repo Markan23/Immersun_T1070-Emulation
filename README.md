@@ -19,7 +19,7 @@ where LL = length of payload
 However Immersun do not use this addressing method but do use it as another filter so these bytes have to match sending device in my case 
 it was LL 00 F5 4E FF (obviously the LL value depends on payload length)
 
-Captured data loos like this
+Captured data looks like this
 aaaaaa869817e960b00f54effd0ff000102010037b2aa
 
 

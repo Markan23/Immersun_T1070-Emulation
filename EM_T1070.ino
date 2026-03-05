@@ -227,6 +227,10 @@ void sendResponse() {
   if (ct1 < -50) {
     excess = (ct1 * -1);
   }
+  else
+  {
+    excess = 50;
+  }
   // My inverter takes care of charging battery first so the 2 CTs are not necessary
   // I just need to sense when the excess is being exported and how much
   //int32_t ct1 = (int32_t)(meterCT + ((millis() % 1000) / 500.0 - 1.0));  // ±1W
